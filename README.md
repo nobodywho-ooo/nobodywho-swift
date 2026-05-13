@@ -4,6 +4,8 @@ On-device AI inference for Swift apps. Run LLMs locally on iOS, macOS, visionOS,
 
 NobodyWho is powered by [llama.cpp](https://github.com/ggml-org/llama.cpp) and supports thousands of GGUF models from [Hugging Face](https://huggingface.co/models?library=gguf&sort=trending).
 
+You can see and contribute to NobodyWho inference engine code [here](https://github.com/nobodywho-ooo/nobodywho).
+
 ## Installation
 
 Add NobodyWho to your project using Swift Package Manager:
