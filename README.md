@@ -1,3 +1,6 @@
+[![](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2Fnobodywho-ooo%2Fnobodywho-swift%2Fbadge%3Ftype%3Dswift-versions)](https://swiftpackageindex.com/nobodywho-ooo/nobodywho-swift)
+[![](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2Fnobodywho-ooo%2Fnobodywho-swift%2Fbadge%3Ftype%3Dplatforms)](https://swiftpackageindex.com/nobodywho-ooo/nobodywho-swift)
+
 # NobodyWho for Swift
 
 On-device AI inference for Swift apps. Run LLMs locally on iOS, macOS, visionOS, and watchOS with no API keys or network connection required.
@@ -12,7 +15,7 @@ Add NobodyWho to your project using Swift Package Manager:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/nobodywho-ooo/nobodywho-swift.git", from: "0.2.0"),
+    .package(url: "https://github.com/nobodywho-ooo/nobodywho-swift.git", from: "1.0.0"),
 ]
 ```
 
