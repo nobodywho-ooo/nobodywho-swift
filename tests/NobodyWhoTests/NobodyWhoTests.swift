@@ -34,7 +34,7 @@ final class NobodyWhoTests: XCTestCase {
         let modelPath = try requireEnv("TEST_MODEL")
         let model = try await Model.load(modelPath: modelPath)
         let noThinking = ["enable_thinking": false]
-        let chat = Chat(model: model, systemPrompt: "Reply with one word only.", templateVariables: noThinking)
+        let chat = try Chat(model: model, systemPrompt: "Reply with one word only.", templateVariables: noThinking)
 
         // Completion
         let response = try await chat.ask("Say hello").completed()
@@ -43,7 +43,7 @@ final class NobodyWhoTests: XCTestCase {
         // Streaming
         try await chat.resetContext(systemPrompt: "Reply briefly.")
         var tokens: [String] = []
-        for await token in chat.ask("Say hi") {
+        for try await token in chat.ask("Say hi") {
             tokens.append(token)
         }
         XCTAssertFalse(tokens.isEmpty)
@@ -83,7 +83,7 @@ final class NobodyWhoTests: XCTestCase {
             .standardized.path
 
         let model = try await Model.load(modelPath: modelPath, projectionModelPath: mmprojPath)
-        let chat = Chat(model: model, systemPrompt: "Describe what you see briefly.")
+        let chat = try Chat(model: model, systemPrompt: "Describe what you see briefly.")
 
         let prompt = Prompt([
             Prompt.image(imagePath),
