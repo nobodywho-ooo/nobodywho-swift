@@ -1792,6 +1792,12 @@ public protocol SamplerBuilderProtocol: AnyObject, Sendable {
     func penalties(penaltyLastN: Int32, penaltyRepeat: Float, penaltyFreq: Float, penaltyPresent: Float)  -> SamplerBuilder
     
     /**
+     * Set the RNG seed used by random samplers (`dist`, `mirostat_v1`, `mirostat_v2`, `xtc`).
+     * `greedy` ignores it. If unset, a default seed is used.
+     */
+    func seed(seed: UInt32)  -> SamplerBuilder
+    
+    /**
      * Apply temperature scaling to the probability distribution.
      */
     func temperature(temperature: Float)  -> SamplerBuilder
@@ -1978,6 +1984,19 @@ open func penalties(penaltyLastN: Int32, penaltyRepeat: Float, penaltyFreq: Floa
         FfiConverterFloat.lower(penaltyRepeat),
         FfiConverterFloat.lower(penaltyFreq),
         FfiConverterFloat.lower(penaltyPresent),$0
+    )
+})
+}
+    
+    /**
+     * Set the RNG seed used by random samplers (`dist`, `mirostat_v1`, `mirostat_v2`, `xtc`).
+     * `greedy` ignores it. If unset, a default seed is used.
+     */
+open func seed(seed: UInt32) -> SamplerBuilder  {
+    return try!  FfiConverterTypeSamplerBuilder_lift(try! rustCall() {
+    uniffi_nobodywho_uniffi_fn_method_samplerbuilder_seed(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(seed),$0
     )
 })
 }
@@ -2271,6 +2290,61 @@ public func FfiConverterTypeAsset_lift(_ buf: RustBuffer) throws -> Asset {
 #endif
 public func FfiConverterTypeAsset_lower(_ value: Asset) -> RustBuffer {
     return FfiConverterTypeAsset.lower(value)
+}
+
+
+/**
+ * A cached `.gguf` model and its on-disk size.
+ */
+public struct CachedModel: Equatable, Hashable {
+    public var path: String
+    public var size: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(path: String, size: UInt64) {
+        self.path = path
+        self.size = size
+    }
+
+    
+}
+
+#if compiler(>=6)
+extension CachedModel: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCachedModel: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CachedModel {
+        return
+            try CachedModel(
+                path: FfiConverterString.read(from: &buf), 
+                size: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CachedModel, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.path, into: &buf)
+        FfiConverterUInt64.write(value.size, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCachedModel_lift(_ buf: RustBuffer) throws -> CachedModel {
+    return try FfiConverterTypeCachedModel.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCachedModel_lower(_ value: CachedModel) -> RustBuffer {
+    return FfiConverterTypeCachedModel.lower(value)
 }
 
 
@@ -3269,6 +3343,31 @@ fileprivate struct FfiConverterSequenceTypeAsset: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCachedModel: FfiConverterRustBuffer {
+    typealias SwiftType = [CachedModel]
+
+    public static func write(_ value: [CachedModel], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCachedModel.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CachedModel] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CachedModel]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCachedModel.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeToolCall: FfiConverterRustBuffer {
     typealias SwiftType = [ToolCall]
 
@@ -3497,6 +3596,15 @@ public func downloadModel(modelPath: String, headers: [String: String]?, onDownl
         )
 }
 /**
+ * Returns every cached `.gguf` model paired with its byte size.
+ */
+public func getCachedModels()throws  -> [CachedModel]  {
+    return try  FfiConverterSequenceTypeCachedModel.lift(try rustCallWithError(FfiConverterTypeNobodyWhoError_lift) {
+    uniffi_nobodywho_uniffi_fn_func_get_cached_models($0
+    )
+})
+}
+/**
  * Load a GGUF model from a local path or remote URL.
  *
  * Accepts local filesystem paths, `hf://owner/repo/file.gguf` for HuggingFace downloads,
@@ -3645,6 +3753,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_nobodywho_uniffi_checksum_func_download_model() != 31331) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_nobodywho_uniffi_checksum_func_get_cached_models() != 12002) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_nobodywho_uniffi_checksum_func_load_model() != 33587) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3769,6 +3880,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_penalties() != 40767) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_seed() != 25129) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_temperature() != 8456) {
