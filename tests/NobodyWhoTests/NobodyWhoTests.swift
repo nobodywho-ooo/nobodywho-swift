@@ -99,6 +99,28 @@ final class NobodyWhoTests: XCTestCase {
         XCTAssertTrue(called)
     }
 
+    // MARK: - Tokenize
+
+    func testTokenize() async throws {
+        let modelPath = try requireEnv("TEST_MODEL")
+        let model = try await Model.load(modelPath: modelPath)
+        let chat = try Chat(model: model, templateVariables: ["enable_thinking": false])
+        let tokens = try await chat.tokenize(message: "Hey!")
+        XCTAssertEqual(tokens, [18665, 0])
+    }
+
+    // MARK: - Stats
+
+    func testStats() async throws {
+        let modelPath = try requireEnv("TEST_MODEL")
+        let model = try await Model.load(modelPath: modelPath)
+        let chat = try Chat(model: model, templateVariables: ["enable_thinking": false])
+        try await chat.ask("What is the capital of Denmark?").completed()
+        let stats = try await chat.getStats()
+        XCTAssertGreaterThan(stats.contextUsed, 0)
+        XCTAssertLessThanOrEqual(stats.contextUsed, stats.contextSize)
+    }
+
     // MARK: - Vision
 
     func testVision() async throws {
@@ -122,5 +144,26 @@ final class NobodyWhoTests: XCTestCase {
         ])
         let response = try await chat.ask(prompt).completed()
         XCTAssertFalse(response.isEmpty)
+    }
+
+    // MARK: - STT (Whisper)
+
+    func testSTT() async throws {
+        // Model: HuggingFace repo (hf://owner/repo) or local dir. Downloaded and cached on first run.
+        let model = ProcessInfo.processInfo.environment["TEST_WHISPER_MODEL"]
+            ?? "hf://onnx-community/whisper-base"
+
+        // Audio: "Hey Ron. Hey Billy." — shared asset in assets/.
+        // TEST_AUDIO_FILE is set in CI to an absolute path; fall back to the
+        // relative path for local runs from nobodywho/swift/.
+        let audioFile = ProcessInfo.processInfo.environment["TEST_AUDIO_FILE"]
+            ?? "../../assets/sound.mp3"
+
+        // Use fp32 ("default"): the q4 whisper-base encoder mis-transcribes
+        // "Billy" as "Bailey", while fp32 gets it right.
+        let stt = try STT(source: model, quantization: "default")
+        let text = try await stt.transcribeFile(path: audioFile).completed()
+        XCTAssertTrue(text.lowercased().contains("ron"))
+        XCTAssertTrue(text.lowercased().contains("billy"))
     }
 }
