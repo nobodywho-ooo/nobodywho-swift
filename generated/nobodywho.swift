@@ -637,6 +637,13 @@ public protocol RustChatProtocol: AnyObject, Sendable {
     func getTemplateVariables() async throws  -> [String: Bool]
     
     /**
+     * MTP draft acceptance rate for the most recent generation, in `[0.0, 1.0]`.
+     *
+     * Resets each generation. `null` when MTP is disabled or no drafts were proposed.
+     */
+    func mtpAcceptanceRate() async throws  -> Float?
+    
+    /**
      * Reset the chat context with a new system prompt and tools.
      */
     func resetContext(systemPrompt: String?, tools: [RustTool]?) async throws 
@@ -729,8 +736,18 @@ open class RustChat: RustChatProtocol, @unchecked Sendable {
     }
     /**
      * Create a new chat session.
+     *
+     * Pass an `mtp` config to enable MTP speculative decoding for this
+     * chat; `null` disables it. Requires the `RustModel` to have been
+     * loaded with a compatible `draft_model_path`; otherwise construction
+     * fails. Adds around 5% to VRAM usage.
+     *
+     * `thread_count` is the number of CPU threads used for inference; `null`
+     * detects the device's physical core count (performance cores only, on
+     * Apple silicon), since hyperthreads and efficiency cores make inference
+     * slower. Clamped to the CPU count.
      */
-public convenience init(model: RustModel, systemPrompt: String?, contextSize: UInt32, templateVariables: [String: Bool]?, tools: [RustTool]?, sampler: SamplerConfig?)throws  {
+public convenience init(model: RustModel, systemPrompt: String?, contextSize: UInt32, templateVariables: [String: Bool]?, tools: [RustTool]?, sampler: SamplerConfig?, mtp: MtpConfig?, threadCount: UInt32?)throws  {
     let handle =
         try rustCallWithError(FfiConverterTypeNobodyWhoError_lift) {
     uniffi_nobodywho_uniffi_fn_constructor_rustchat_new(
@@ -739,7 +756,9 @@ public convenience init(model: RustModel, systemPrompt: String?, contextSize: UI
         FfiConverterUInt32.lower(contextSize),
         FfiConverterOptionDictionaryStringBool.lower(templateVariables),
         FfiConverterOptionSequenceTypeRustTool.lower(tools),
-        FfiConverterOptionTypeSamplerConfig.lower(sampler),$0
+        FfiConverterOptionTypeSamplerConfig.lower(sampler),
+        FfiConverterOptionTypeMtpConfig.lower(mtp),
+        FfiConverterOptionUInt32.lower(threadCount),$0
     )
 }
     self.init(unsafeFromHandle: handle)
@@ -890,6 +909,28 @@ open func getTemplateVariables()async throws  -> [String: Bool]  {
             completeFunc: ffi_nobodywho_uniffi_rust_future_complete_rust_buffer,
             freeFunc: ffi_nobodywho_uniffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterDictionaryStringBool.lift,
+            errorHandler: FfiConverterTypeNobodyWhoError_lift
+        )
+}
+    
+    /**
+     * MTP draft acceptance rate for the most recent generation, in `[0.0, 1.0]`.
+     *
+     * Resets each generation. `null` when MTP is disabled or no drafts were proposed.
+     */
+open func mtpAcceptanceRate()async throws  -> Float?  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_nobodywho_uniffi_fn_method_rustchat_mtp_acceptance_rate(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_nobodywho_uniffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_nobodywho_uniffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_nobodywho_uniffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionFloat.lift,
             errorHandler: FfiConverterTypeNobodyWhoError_lift
         )
 }
@@ -2271,7 +2312,7 @@ open class RustTts: RustTtsProtocol, @unchecked Sendable {
     /**
      * Create a TTS synthesizer.
      */
-public convenience init(source: String, architecture: String?, voice: String?, language: String?, speed: Float?, steps: UInt32?, silenceDuration: Float?, device: String?)throws  {
+public convenience init(source: String, architecture: String?, voice: String?, language: String?, speed: Float?, steps: UInt32?, silenceDuration: Float?, precision: String?, temperature: Float?, huggingfaceToken: String?, device: String?)throws  {
     let handle =
         try rustCallWithError(FfiConverterTypeNobodyWhoError_lift) {
     uniffi_nobodywho_uniffi_fn_constructor_rusttts_new(
@@ -2282,6 +2323,9 @@ public convenience init(source: String, architecture: String?, voice: String?, l
         FfiConverterOptionFloat.lower(speed),
         FfiConverterOptionUInt32.lower(steps),
         FfiConverterOptionFloat.lower(silenceDuration),
+        FfiConverterOptionString.lower(precision),
+        FfiConverterOptionFloat.lower(temperature),
+        FfiConverterOptionString.lower(huggingfaceToken),
         FfiConverterOptionString.lower(device),$0
     )
 }
@@ -3025,6 +3069,81 @@ public func FfiConverterTypeChatStats_lift(_ buf: RustBuffer) throws -> ChatStat
 #endif
 public func FfiConverterTypeChatStats_lower(_ value: ChatStats) -> RustBuffer {
     return FfiConverterTypeChatStats.lower(value)
+}
+
+
+/**
+ * Tuning for MTP speculative decoding. Passing one to `RustChat::new`
+ * enables MTP; `null` runs the solo decode path. Requires the model to
+ * have been loaded with a compatible `draft_model_path`.
+ */
+public struct MtpConfig: Equatable, Hashable {
+    /**
+     * Maximum draft tokens proposed per speculative step (llama.cpp `n_max`).
+     * Higher values draft more per decode; returns diminish past ~4–6.
+     */
+    public var kMax: UInt32
+    /**
+     * Minimum draft-token probability the drafter will propose (llama.cpp
+     * `p_min`). `0.0` accepts all proposals; raise it to skip low-confidence
+     * drafts.
+     */
+    public var pMin: Float
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Maximum draft tokens proposed per speculative step (llama.cpp `n_max`).
+         * Higher values draft more per decode; returns diminish past ~4–6.
+         */kMax: UInt32 = UInt32(3), 
+        /**
+         * Minimum draft-token probability the drafter will propose (llama.cpp
+         * `p_min`). `0.0` accepts all proposals; raise it to skip low-confidence
+         * drafts.
+         */pMin: Float = Float(0.0)) {
+        self.kMax = kMax
+        self.pMin = pMin
+    }
+
+    
+}
+
+#if compiler(>=6)
+extension MtpConfig: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMtpConfig: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MtpConfig {
+        return
+            try MtpConfig(
+                kMax: FfiConverterUInt32.read(from: &buf), 
+                pMin: FfiConverterFloat.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MtpConfig, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.kMax, into: &buf)
+        FfiConverterFloat.write(value.pMin, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMtpConfig_lift(_ buf: RustBuffer) throws -> MtpConfig {
+    return try FfiConverterTypeMtpConfig.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMtpConfig_lower(_ value: MtpConfig) -> RustBuffer {
+    return FfiConverterTypeMtpConfig.lower(value)
 }
 
 
@@ -3827,6 +3946,30 @@ fileprivate struct FfiConverterOptionTypeSamplerConfig: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeMtpConfig: FfiConverterRustBuffer {
+    typealias SwiftType = MtpConfig?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeMtpConfig.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeMtpConfig.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypePendingToolCall: FfiConverterRustBuffer {
     typealias SwiftType = PendingToolCall?
 
@@ -4385,18 +4528,26 @@ public func getCachedModels()throws  -> [CachedModel]  {
 /**
  * Load a GGUF model from a local path or remote URL.
  *
- * Accepts local filesystem paths, `hf://owner/repo/file.gguf` for HuggingFace downloads,
- * or `https://` URLs. Downloaded models are cached automatically.
+ * Accepts local filesystem paths, `hf://owner/repo/file.gguf`, `https://` URLs,
+ * or `auto` for memory-based selection. Downloaded models are cached automatically.
+ *
+ * # MTP speculative decoding
+ *
+ * Pass `draft_model_path` pointing to a compatible MTP heads gguf (e.g.
+ * `mtp-gemma-4-E2B-it.gguf` for Gemma-4-E2B) to enable MTP
+ * speculative decoding on chats built from this model. Whether MTP is
+ * actually used is a per-chat decision — pass it through
+ * `Chat`-level config on the wrapping binding.
  *
  * This is a free function instead of an async constructor because
  * uniffi-bindgen-react-native generates invalid JS (`async static` instead
  * of `static async`) for async constructors.
  */
-public func loadModel(modelPath: String, useGpu: Bool, projectionModelPath: String?, onDownloadProgress: RustDownloadProgressCallback?)async throws  -> RustModel  {
+public func loadModel(modelPath: String, useGpu: Bool, projectionModelPath: String?, draftModelPath: String?, onDownloadProgress: RustDownloadProgressCallback?)async throws  -> RustModel  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
-                uniffi_nobodywho_uniffi_fn_func_load_model(FfiConverterString.lower(modelPath),FfiConverterBool.lower(useGpu),FfiConverterOptionString.lower(projectionModelPath),FfiConverterOptionCallbackInterfaceRustDownloadProgressCallback.lower(onDownloadProgress)
+                uniffi_nobodywho_uniffi_fn_func_load_model(FfiConverterString.lower(modelPath),FfiConverterBool.lower(useGpu),FfiConverterOptionString.lower(projectionModelPath),FfiConverterOptionString.lower(draftModelPath),FfiConverterOptionCallbackInterfaceRustDownloadProgressCallback.lower(onDownloadProgress)
                 )
             },
             pollFunc: ffi_nobodywho_uniffi_rust_future_poll_u64,
@@ -4409,11 +4560,11 @@ public func loadModel(modelPath: String, useGpu: Bool, projectionModelPath: Stri
 /**
  * Create a TTS synthesizer.
  */
-public func loadTts(source: String, architecture: String?, voice: String?, language: String?, speed: Float?, steps: UInt32?, silenceDuration: Float?, device: String?)async throws  -> RustTts  {
+public func loadTts(source: String, architecture: String?, voice: String?, language: String?, speed: Float?, steps: UInt32?, silenceDuration: Float?, precision: String?, temperature: Float?, huggingfaceToken: String?, device: String?)async throws  -> RustTts  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
-                uniffi_nobodywho_uniffi_fn_func_load_tts(FfiConverterString.lower(source),FfiConverterOptionString.lower(architecture),FfiConverterOptionString.lower(voice),FfiConverterOptionString.lower(language),FfiConverterOptionFloat.lower(speed),FfiConverterOptionUInt32.lower(steps),FfiConverterOptionFloat.lower(silenceDuration),FfiConverterOptionString.lower(device)
+                uniffi_nobodywho_uniffi_fn_func_load_tts(FfiConverterString.lower(source),FfiConverterOptionString.lower(architecture),FfiConverterOptionString.lower(voice),FfiConverterOptionString.lower(language),FfiConverterOptionFloat.lower(speed),FfiConverterOptionUInt32.lower(steps),FfiConverterOptionFloat.lower(silenceDuration),FfiConverterOptionString.lower(precision),FfiConverterOptionFloat.lower(temperature),FfiConverterOptionString.lower(huggingfaceToken),FfiConverterOptionString.lower(device)
                 )
             },
             pollFunc: ffi_nobodywho_uniffi_rust_future_poll_u64,
@@ -4551,10 +4702,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_nobodywho_uniffi_checksum_func_get_cached_models() != 12002) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_nobodywho_uniffi_checksum_func_load_model() != 33587) {
+    if (uniffi_nobodywho_uniffi_checksum_func_load_model() != 22964) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_nobodywho_uniffi_checksum_func_load_tts() != 61935) {
+    if (uniffi_nobodywho_uniffi_checksum_func_load_tts() != 26587) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_func_sampler_preset_constrain_with_grammar() != 13698) {
@@ -4612,6 +4763,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_method_rustchat_get_template_variables() != 19616) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_nobodywho_uniffi_checksum_method_rustchat_mtp_acceptance_rate() != 727) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_method_rustchat_reset_context() != 47191) {
@@ -4734,7 +4888,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_nobodywho_uniffi_checksum_method_samplerconfig_to_json() != 51798) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_nobodywho_uniffi_checksum_constructor_rustchat_new() != 24505) {
+    if (uniffi_nobodywho_uniffi_checksum_constructor_rustchat_new() != 2313) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_constructor_rustcrossencoder_new() != 9022) {
@@ -4752,7 +4906,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_nobodywho_uniffi_checksum_constructor_rusttool_new_async() != 54521) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_nobodywho_uniffi_checksum_constructor_rusttts_new() != 24110) {
+    if (uniffi_nobodywho_uniffi_checksum_constructor_rusttts_new() != 34899) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_constructor_samplerbuilder_new() != 50214) {
