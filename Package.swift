@@ -23,8 +23,8 @@ let package = Package(
         .binaryTarget(
             name: "NobodyWhoNative",
             // During development, use a local path:
-            url: "https://github.com/nobodywho-ooo/nobodywho/releases/download/nobodywho-swift-v3.0.0/NobodyWhoNative.xcframework.zip",
-            checksum: "d8e598bd085b556911fc75e5afe1bf2ddbf568b5cdb2ba9a479f496388a0f336"
+            url: "https://github.com/nobodywho-ooo/nobodywho/releases/download/nobodywho-swift-v4.0.0/NobodyWhoNative.xcframework.zip",
+            checksum: "6c9b20c8220629a253da5bf5e0962339594e089c840716f64e8f15e77fcac7a0"
             // For releases, CI patches this to:
             // url: "https://github.com/nobodywho-ooo/nobodywho/releases/download/nobodywho-swift-v<VERSION>/NobodyWhoNative.xcframework.zip",
             // checksum: "<SHA256>"

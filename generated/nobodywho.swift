@@ -606,10 +606,24 @@ public protocol RustChatProtocol: AnyObject, Sendable {
     /**
      * Send a multimodal prompt (text + images/audio) and get a token stream.
      *
-     * `parts` is an ordered list of `PromptPart` items.
+     * `parts` is an ordered list of `ContentPart` items.
      * Image and audio parts should contain a local file-system path.
      */
-    func askWithPrompt(parts: [PromptPart])  -> RustTokenStream
+    func askWithPrompt(parts: [ContentPart])  -> RustTokenStream
+    
+    /**
+     * Answer a full list of messages and get a token stream, replacing the chat
+     * history.
+     *
+     * The list is the whole conversation, used as given: it must be non-empty, end
+     * in a user or tool message, and carry a system message only first. That system
+     * message sets the chat's system prompt; leave it out and the prompt already on
+     * the chat is kept. The response is appended, and the next `ask` continues from
+     * there.
+     *
+     * `options` follows the same rule for the chat's other settings.
+     */
+    func complete(messages: [Message], options: Options) throws  -> RustTokenStream
     
     /**
      * Get the current chat history as a list of messages.
@@ -692,7 +706,7 @@ public protocol RustChatProtocol: AnyObject, Sendable {
      * Tokenize a multimodal prompt and return the token IDs.
      * Text tokens produce an integer ID; image/audio embedding slots produce null.
      */
-    func tokenizeWithPrompt(parts: [PromptPart]) async throws  -> [Int32?]
+    func tokenizeWithPrompt(parts: [ContentPart]) async throws  -> [Int32?]
     
 }
 open class RustChat: RustChatProtocol, @unchecked Sendable {
@@ -801,14 +815,36 @@ open func askWithJsonPrompt(json: String)throws  -> RustTokenStream  {
     /**
      * Send a multimodal prompt (text + images/audio) and get a token stream.
      *
-     * `parts` is an ordered list of `PromptPart` items.
+     * `parts` is an ordered list of `ContentPart` items.
      * Image and audio parts should contain a local file-system path.
      */
-open func askWithPrompt(parts: [PromptPart]) -> RustTokenStream  {
+open func askWithPrompt(parts: [ContentPart]) -> RustTokenStream  {
     return try!  FfiConverterTypeRustTokenStream_lift(try! rustCall() {
     uniffi_nobodywho_uniffi_fn_method_rustchat_ask_with_prompt(
             self.uniffiCloneHandle(),
-        FfiConverterSequenceTypePromptPart.lower(parts),$0
+        FfiConverterSequenceTypeContentPart.lower(parts),$0
+    )
+})
+}
+    
+    /**
+     * Answer a full list of messages and get a token stream, replacing the chat
+     * history.
+     *
+     * The list is the whole conversation, used as given: it must be non-empty, end
+     * in a user or tool message, and carry a system message only first. That system
+     * message sets the chat's system prompt; leave it out and the prompt already on
+     * the chat is kept. The response is appended, and the next `ask` continues from
+     * there.
+     *
+     * `options` follows the same rule for the chat's other settings.
+     */
+open func complete(messages: [Message], options: Options)throws  -> RustTokenStream  {
+    return try  FfiConverterTypeRustTokenStream_lift(try rustCallWithError(FfiConverterTypeNobodyWhoError_lift) {
+    uniffi_nobodywho_uniffi_fn_method_rustchat_complete(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeMessage.lower(messages),
+        FfiConverterTypeOptions_lower(options),$0
     )
 })
 }
@@ -1109,13 +1145,13 @@ open func tokenize(message: String)async throws  -> [Int32?]  {
      * Tokenize a multimodal prompt and return the token IDs.
      * Text tokens produce an integer ID; image/audio embedding slots produce null.
      */
-open func tokenizeWithPrompt(parts: [PromptPart])async throws  -> [Int32?]  {
+open func tokenizeWithPrompt(parts: [ContentPart])async throws  -> [Int32?]  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_nobodywho_uniffi_fn_method_rustchat_tokenize_with_prompt(
                     self.uniffiCloneHandle(),
-                    FfiConverterSequenceTypePromptPart.lower(parts)
+                    FfiConverterSequenceTypeContentPart.lower(parts)
                 )
             },
             pollFunc: ffi_nobodywho_uniffi_rust_future_poll_rust_buffer,
@@ -2665,6 +2701,17 @@ public protocol SamplerBuilderProtocol: AnyObject, Sendable {
     func dry(multiplier: Float, base: Float, allowedLength: Int32, penaltyLastN: Int32, seqBreakers: [String])  -> SamplerBuilder
     
     /**
+     * Apply dynamic temperature scaling (a.k.a. entropy) described in the paper
+     * <https://arxiv.org/abs/2309.02772>.
+     *
+     * Args:
+     * temperature: Temperature value (lower = more focused, higher = more random)
+     * delta: Dynamic temperature range. The final temperature will be in the range of `[temperature - delta; temperature + delta]`.
+     * exponent: Temperature is calculated as `entropy^exponent` (bounded by the range above)
+     */
+    func dynamicTemperature(temperature: Float, delta: Float, exponent: Float)  -> SamplerBuilder
+    
+    /**
      * Deprecated: Use `sampler_preset_constrain_with_grammar()` instead. It accepts both Lark and GBNF strings.
      */
     func grammar(grammar: String, triggerOn: String?, root: String)  -> SamplerBuilder
@@ -2673,6 +2720,17 @@ public protocol SamplerBuilderProtocol: AnyObject, Sendable {
      * Always select the most probable token (deterministic).
      */
     func greedy()  -> SamplerConfig
+    
+    /**
+     * Modify the likelihood of specific tokens.
+     *
+     * Args:
+     * biases: Mapping from token ID to its bias.
+     * The bias modifies the likelihood of the token being selected
+     * (`>0.0` means higher probability of the token being selected).
+     * Use `-Infinity` to ban a token.
+     */
+    func logitBias(biases: [Int32: Float])  -> SamplerBuilder
     
     /**
      * Keep tokens with probability above min_p * (probability of most likely token).
@@ -2709,6 +2767,15 @@ public protocol SamplerBuilderProtocol: AnyObject, Sendable {
      * Keep only the top K most probable tokens.
      */
     func topK(topK: Int32)  -> SamplerBuilder
+    
+    /**
+     * Top-nσ sampling as described in academic paper "Top-nσ: Not All Logits Are You Need"
+     * <https://arxiv.org/pdf/2411.07641>
+     *
+     * Args:
+     * n: Number of standard deviations from the mean to include in sampling.
+     */
+    func topNSigma(n: Float)  -> SamplerBuilder
     
     /**
      * Keep tokens whose cumulative probability is below top_p.
@@ -2812,6 +2879,26 @@ open func dry(multiplier: Float, base: Float, allowedLength: Int32, penaltyLastN
 }
     
     /**
+     * Apply dynamic temperature scaling (a.k.a. entropy) described in the paper
+     * <https://arxiv.org/abs/2309.02772>.
+     *
+     * Args:
+     * temperature: Temperature value (lower = more focused, higher = more random)
+     * delta: Dynamic temperature range. The final temperature will be in the range of `[temperature - delta; temperature + delta]`.
+     * exponent: Temperature is calculated as `entropy^exponent` (bounded by the range above)
+     */
+open func dynamicTemperature(temperature: Float, delta: Float, exponent: Float) -> SamplerBuilder  {
+    return try!  FfiConverterTypeSamplerBuilder_lift(try! rustCall() {
+    uniffi_nobodywho_uniffi_fn_method_samplerbuilder_dynamic_temperature(
+            self.uniffiCloneHandle(),
+        FfiConverterFloat.lower(temperature),
+        FfiConverterFloat.lower(delta),
+        FfiConverterFloat.lower(exponent),$0
+    )
+})
+}
+    
+    /**
      * Deprecated: Use `sampler_preset_constrain_with_grammar()` instead. It accepts both Lark and GBNF strings.
      */
 open func grammar(grammar: String, triggerOn: String?, root: String) -> SamplerBuilder  {
@@ -2832,6 +2919,24 @@ open func greedy() -> SamplerConfig  {
     return try!  FfiConverterTypeSamplerConfig_lift(try! rustCall() {
     uniffi_nobodywho_uniffi_fn_method_samplerbuilder_greedy(
             self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Modify the likelihood of specific tokens.
+     *
+     * Args:
+     * biases: Mapping from token ID to its bias.
+     * The bias modifies the likelihood of the token being selected
+     * (`>0.0` means higher probability of the token being selected).
+     * Use `-Infinity` to ban a token.
+     */
+open func logitBias(biases: [Int32: Float]) -> SamplerBuilder  {
+    return try!  FfiConverterTypeSamplerBuilder_lift(try! rustCall() {
+    uniffi_nobodywho_uniffi_fn_method_samplerbuilder_logit_bias(
+            self.uniffiCloneHandle(),
+        FfiConverterDictionaryInt32Float.lower(biases),$0
     )
 })
 }
@@ -2924,6 +3029,22 @@ open func topK(topK: Int32) -> SamplerBuilder  {
     uniffi_nobodywho_uniffi_fn_method_samplerbuilder_top_k(
             self.uniffiCloneHandle(),
         FfiConverterInt32.lower(topK),$0
+    )
+})
+}
+    
+    /**
+     * Top-nσ sampling as described in academic paper "Top-nσ: Not All Logits Are You Need"
+     * <https://arxiv.org/pdf/2411.07641>
+     *
+     * Args:
+     * n: Number of standard deviations from the mean to include in sampling.
+     */
+open func topNSigma(n: Float) -> SamplerBuilder  {
+    return try!  FfiConverterTypeSamplerBuilder_lift(try! rustCall() {
+    uniffi_nobodywho_uniffi_fn_method_samplerbuilder_top_n_sigma(
+            self.uniffiCloneHandle(),
+        FfiConverterFloat.lower(n),$0
     )
 })
 }
@@ -3144,58 +3265,6 @@ public func FfiConverterTypeSamplerConfig_lower(_ value: SamplerConfig) -> UInt6
 
 
 
-public struct Asset: Equatable, Hashable {
-    public var id: String
-    public var path: String
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(id: String, path: String) {
-        self.id = id
-        self.path = path
-    }
-
-    
-}
-
-#if compiler(>=6)
-extension Asset: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeAsset: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Asset {
-        return
-            try Asset(
-                id: FfiConverterString.read(from: &buf), 
-                path: FfiConverterString.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: Asset, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.id, into: &buf)
-        FfiConverterString.write(value.path, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeAsset_lift(_ buf: RustBuffer) throws -> Asset {
-    return try FfiConverterTypeAsset.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeAsset_lower(_ value: Asset) -> RustBuffer {
-    return FfiConverterTypeAsset.lower(value)
-}
-
-
 /**
  * A cached `.gguf` model and its on-disk size.
  */
@@ -3379,6 +3448,80 @@ public func FfiConverterTypeMtpConfig_lower(_ value: MtpConfig) -> RustBuffer {
 
 
 /**
+ * Settings to apply before a `complete` turn. An unset field keeps what the
+ * chat has; a set one stays set, like a leading system message.
+ */
+public struct Options {
+    public var sampler: SamplerConfig?
+    /**
+     * Replaces the chat's template variables wholesale.
+     */
+    public var templateVariables: [String: Bool]?
+    /**
+     * Re-selects the chat template, so the turn re-prefills from near token
+     * zero. An empty list removes the tools.
+     */
+    public var tools: [RustTool]?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(sampler: SamplerConfig? = nil, 
+        /**
+         * Replaces the chat's template variables wholesale.
+         */templateVariables: [String: Bool]? = nil, 
+        /**
+         * Re-selects the chat template, so the turn re-prefills from near token
+         * zero. An empty list removes the tools.
+         */tools: [RustTool]? = nil) {
+        self.sampler = sampler
+        self.templateVariables = templateVariables
+        self.tools = tools
+    }
+
+    
+}
+
+#if compiler(>=6)
+extension Options: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeOptions: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Options {
+        return
+            try Options(
+                sampler: FfiConverterOptionTypeSamplerConfig.read(from: &buf), 
+                templateVariables: FfiConverterOptionDictionaryStringBool.read(from: &buf), 
+                tools: FfiConverterOptionSequenceTypeRustTool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: Options, into buf: inout [UInt8]) {
+        FfiConverterOptionTypeSamplerConfig.write(value.sampler, into: &buf)
+        FfiConverterOptionDictionaryStringBool.write(value.templateVariables, into: &buf)
+        FfiConverterOptionSequenceTypeRustTool.write(value.tools, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOptions_lift(_ buf: RustBuffer) throws -> Options {
+    return try FfiConverterTypeOptions.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOptions_lower(_ value: Options) -> RustBuffer {
+    return FfiConverterTypeOptions.lower(value)
+}
+
+
+/**
  * A pending tool call waiting for resolution from the language binding.
  */
 public struct PendingToolCall: Equatable, Hashable {
@@ -3544,16 +3687,102 @@ public func FfiConverterTypeToolParameter_lower(_ value: ToolParameter) -> RustB
 
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * One piece of a message: a run of text, or a media file at this position.
+ * The core type's bitmap id is worker-local, so it is not mirrored — media is
+ * re-registered from the path whenever content is handed back in.
+ */
+
+public enum ContentPart: Equatable, Hashable {
+    
+    case text(text: String
+    )
+    case image(path: String
+    )
+    case audio(path: String
+    )
+
+
+
+}
+
+#if compiler(>=6)
+extension ContentPart: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeContentPart: FfiConverterRustBuffer {
+    typealias SwiftType = ContentPart
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ContentPart {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .text(text: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 2: return .image(path: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 3: return .audio(path: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ContentPart, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .text(text):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(text, into: &buf)
+            
+        
+        case let .image(path):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(path, into: &buf)
+            
+        
+        case let .audio(path):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(path, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeContentPart_lift(_ buf: RustBuffer) throws -> ContentPart {
+    return try FfiConverterTypeContentPart.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeContentPart_lower(_ value: ContentPart) -> RustBuffer {
+    return FfiConverterTypeContentPart.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 
 public enum Message: Equatable, Hashable {
     
-    case user(content: String, assets: [Asset]
+    case user(content: MessageContent
     )
-    case assistant(content: String, toolCalls: [ToolCall]?
+    case assistant(content: MessageContent, toolCalls: [ToolCall]?
     )
-    case system(content: String
+    case system(content: MessageContent
     )
-    case tool(name: String, content: String
+    case tool(name: String, content: MessageContent
     )
 
 
@@ -3574,16 +3803,16 @@ public struct FfiConverterTypeMessage: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
         
-        case 1: return .user(content: try FfiConverterString.read(from: &buf), assets: try FfiConverterSequenceTypeAsset.read(from: &buf)
+        case 1: return .user(content: try FfiConverterTypeMessageContent.read(from: &buf)
         )
         
-        case 2: return .assistant(content: try FfiConverterString.read(from: &buf), toolCalls: try FfiConverterOptionSequenceTypeToolCall.read(from: &buf)
+        case 2: return .assistant(content: try FfiConverterTypeMessageContent.read(from: &buf), toolCalls: try FfiConverterOptionSequenceTypeToolCall.read(from: &buf)
         )
         
-        case 3: return .system(content: try FfiConverterString.read(from: &buf)
+        case 3: return .system(content: try FfiConverterTypeMessageContent.read(from: &buf)
         )
         
-        case 4: return .tool(name: try FfiConverterString.read(from: &buf), content: try FfiConverterString.read(from: &buf)
+        case 4: return .tool(name: try FfiConverterString.read(from: &buf), content: try FfiConverterTypeMessageContent.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -3594,27 +3823,26 @@ public struct FfiConverterTypeMessage: FfiConverterRustBuffer {
         switch value {
         
         
-        case let .user(content,assets):
+        case let .user(content):
             writeInt(&buf, Int32(1))
-            FfiConverterString.write(content, into: &buf)
-            FfiConverterSequenceTypeAsset.write(assets, into: &buf)
+            FfiConverterTypeMessageContent.write(content, into: &buf)
             
         
         case let .assistant(content,toolCalls):
             writeInt(&buf, Int32(2))
-            FfiConverterString.write(content, into: &buf)
+            FfiConverterTypeMessageContent.write(content, into: &buf)
             FfiConverterOptionSequenceTypeToolCall.write(toolCalls, into: &buf)
             
         
         case let .system(content):
             writeInt(&buf, Int32(3))
-            FfiConverterString.write(content, into: &buf)
+            FfiConverterTypeMessageContent.write(content, into: &buf)
             
         
         case let .tool(name,content):
             writeInt(&buf, Int32(4))
             FfiConverterString.write(name, into: &buf)
-            FfiConverterString.write(content, into: &buf)
+            FfiConverterTypeMessageContent.write(content, into: &buf)
             
         }
     }
@@ -3633,6 +3861,91 @@ public func FfiConverterTypeMessage_lift(_ buf: RustBuffer) throws -> Message {
 #endif
 public func FfiConverterTypeMessage_lower(_ value: Message) -> RustBuffer {
     return FfiConverterTypeMessage.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum MessageContent: Equatable, Hashable {
+    
+    case text(text: String
+    )
+    case parts(parts: [ContentPart]
+    )
+    /**
+     * JSON-encoded. Chat templates written for structured content receive it
+     * as a real list or map rather than as a string.
+     */
+    case json(json: String
+    )
+
+
+
+}
+
+#if compiler(>=6)
+extension MessageContent: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMessageContent: FfiConverterRustBuffer {
+    typealias SwiftType = MessageContent
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MessageContent {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .text(text: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 2: return .parts(parts: try FfiConverterSequenceTypeContentPart.read(from: &buf)
+        )
+        
+        case 3: return .json(json: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MessageContent, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .text(text):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(text, into: &buf)
+            
+        
+        case let .parts(parts):
+            writeInt(&buf, Int32(2))
+            FfiConverterSequenceTypeContentPart.write(parts, into: &buf)
+            
+        
+        case let .json(json):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(json, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMessageContent_lift(_ buf: RustBuffer) throws -> MessageContent {
+    return try FfiConverterTypeMessageContent.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMessageContent_lower(_ value: MessageContent) -> RustBuffer {
+    return FfiConverterTypeMessageContent.lower(value)
 }
 
 
@@ -3707,90 +4020,6 @@ public func FfiConverterTypeNobodyWhoError_lift(_ buf: RustBuffer) throws -> Nob
 public func FfiConverterTypeNobodyWhoError_lower(_ value: NobodyWhoError) -> RustBuffer {
     return FfiConverterTypeNobodyWhoError.lower(value)
 }
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * A part of a multimodal prompt.  Mirrors the core `PromptPart` enum.
- */
-
-public enum PromptPart: Equatable, Hashable {
-    
-    case text(content: String
-    )
-    case image(path: String
-    )
-    case audio(path: String
-    )
-
-
-
-}
-
-#if compiler(>=6)
-extension PromptPart: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypePromptPart: FfiConverterRustBuffer {
-    typealias SwiftType = PromptPart
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PromptPart {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .text(content: try FfiConverterString.read(from: &buf)
-        )
-        
-        case 2: return .image(path: try FfiConverterString.read(from: &buf)
-        )
-        
-        case 3: return .audio(path: try FfiConverterString.read(from: &buf)
-        )
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: PromptPart, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case let .text(content):
-            writeInt(&buf, Int32(1))
-            FfiConverterString.write(content, into: &buf)
-            
-        
-        case let .image(path):
-            writeInt(&buf, Int32(2))
-            FfiConverterString.write(path, into: &buf)
-            
-        
-        case let .audio(path):
-            writeInt(&buf, Int32(3))
-            FfiConverterString.write(path, into: &buf)
-            
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypePromptPart_lift(_ buf: RustBuffer) throws -> PromptPart {
-    return try FfiConverterTypePromptPart.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypePromptPart_lower(_ value: PromptPart) -> RustBuffer {
-    return FfiConverterTypePromptPart.lower(value)
-}
-
 
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
@@ -4529,31 +4758,6 @@ fileprivate struct FfiConverterSequenceTypeRustTool: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterSequenceTypeAsset: FfiConverterRustBuffer {
-    typealias SwiftType = [Asset]
-
-    public static func write(_ value: [Asset], into buf: inout [UInt8]) {
-        let len = Int32(value.count)
-        writeInt(&buf, len)
-        for item in value {
-            FfiConverterTypeAsset.write(item, into: &buf)
-        }
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Asset] {
-        let len: Int32 = try readInt(&buf)
-        var seq = [Asset]()
-        seq.reserveCapacity(Int(len))
-        for _ in 0 ..< len {
-            seq.append(try FfiConverterTypeAsset.read(from: &buf))
-        }
-        return seq
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
 fileprivate struct FfiConverterSequenceTypeCachedModel: FfiConverterRustBuffer {
     typealias SwiftType = [CachedModel]
 
@@ -4629,6 +4833,31 @@ fileprivate struct FfiConverterSequenceTypeToolParameter: FfiConverterRustBuffer
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeContentPart: FfiConverterRustBuffer {
+    typealias SwiftType = [ContentPart]
+
+    public static func write(_ value: [ContentPart], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeContentPart.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ContentPart] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ContentPart]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeContentPart.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeMessage: FfiConverterRustBuffer {
     typealias SwiftType = [Message]
 
@@ -4646,31 +4875,6 @@ fileprivate struct FfiConverterSequenceTypeMessage: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeMessage.read(from: &buf))
-        }
-        return seq
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterSequenceTypePromptPart: FfiConverterRustBuffer {
-    typealias SwiftType = [PromptPart]
-
-    public static func write(_ value: [PromptPart], into buf: inout [UInt8]) {
-        let len = Int32(value.count)
-        writeInt(&buf, len)
-        for item in value {
-            FfiConverterTypePromptPart.write(item, into: &buf)
-        }
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [PromptPart] {
-        let len: Int32 = try readInt(&buf)
-        var seq = [PromptPart]()
-        seq.reserveCapacity(Int(len))
-        for _ in 0 ..< len {
-            seq.append(try FfiConverterTypePromptPart.read(from: &buf))
         }
         return seq
     }
@@ -4748,6 +4952,32 @@ fileprivate struct FfiConverterSequenceSequenceFloat: FfiConverterRustBuffer {
             seq.append(try FfiConverterSequenceFloat.read(from: &buf))
         }
         return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterDictionaryInt32Float: FfiConverterRustBuffer {
+    public static func write(_ value: [Int32: Float], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for (key, value) in value {
+            FfiConverterInt32.write(key, into: &buf)
+            FfiConverterFloat.write(value, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Int32: Float] {
+        let len: Int32 = try readInt(&buf)
+        var dict = [Int32: Float]()
+        dict.reserveCapacity(Int(len))
+        for _ in 0..<len {
+            let key = try FfiConverterInt32.read(from: &buf)
+            let value = try FfiConverterFloat.read(from: &buf)
+            dict[key] = value
+        }
+        return dict
     }
 }
 
@@ -5164,7 +5394,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_nobodywho_uniffi_checksum_method_rustchat_ask_with_json_prompt() != 63877) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_nobodywho_uniffi_checksum_method_rustchat_ask_with_prompt() != 65089) {
+    if (uniffi_nobodywho_uniffi_checksum_method_rustchat_ask_with_prompt() != 46807) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_nobodywho_uniffi_checksum_method_rustchat_complete() != 37833) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_method_rustchat_get_chat_history() != 12722) {
@@ -5212,7 +5445,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_nobodywho_uniffi_checksum_method_rustchat_tokenize() != 52520) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_nobodywho_uniffi_checksum_method_rustchat_tokenize_with_prompt() != 60528) {
+    if (uniffi_nobodywho_uniffi_checksum_method_rustchat_tokenize_with_prompt() != 15286) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_method_rustcrossencoder_rank() != 55500) {
@@ -5278,10 +5511,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_dry() != 35315) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_dynamic_temperature() != 5004) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_grammar() != 3547) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_greedy() != 32898) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_logit_bias() != 61844) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_min_p() != 33705) {
@@ -5303,6 +5542,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_top_k() != 26600) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_top_n_sigma() != 44336) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_top_p() != 54577) {
