@@ -615,11 +615,11 @@ public protocol RustChatProtocol: AnyObject, Sendable {
      * Answer a full list of messages and get a token stream, replacing the chat
      * history.
      *
-     * The list is the whole conversation, used as given: it must be non-empty, end
-     * in a user or tool message, and carry a system message only first. That system
-     * message sets the chat's system prompt; leave it out and the prompt already on
-     * the chat is kept. The response is appended, and the next `ask` continues from
-     * there.
+     * The list is the whole conversation, used as given: it must be non-empty and
+     * end in a user or tool message. A leading system message sets the chat's system
+     * prompt; leave it out and the prompt already on the chat is kept. A later one
+     * stays in the history, for the chat template to render in place. The response
+     * is appended, and the next `ask` continues from there.
      *
      * `options` follows the same rule for the chat's other settings.
      */
@@ -671,6 +671,11 @@ public protocol RustChatProtocol: AnyObject, Sendable {
      * Set the chat history from a list of messages.
      */
     func setChatHistory(messages: [Message]) async throws 
+    
+    /**
+     * Set how old turns are forgotten when the context is full.
+     */
+    func setContextShift(options: ContextShiftOptions) async throws 
     
     /**
      * Set the sampler configuration.
@@ -760,8 +765,11 @@ open class RustChat: RustChatProtocol, @unchecked Sendable {
      * detects the device's physical core count (performance cores only, on
      * Apple silicon), since hyperthreads and efficiency cores make inference
      * slower. Clamped to the CPU count.
+     *
+     * `context_shift` sets how old turns are forgotten when the context is
+     * full; `null` uses the defaults.
      */
-public convenience init(model: RustModel, systemPrompt: String?, contextSize: UInt32, templateVariables: [String: Bool]?, tools: [RustTool]?, sampler: SamplerConfig?, mtp: MtpConfig?, threadCount: UInt32?)throws  {
+public convenience init(model: RustModel, systemPrompt: String?, contextSize: UInt32, templateVariables: [String: Bool]?, tools: [RustTool]?, sampler: SamplerConfig?, mtp: MtpConfig?, threadCount: UInt32?, contextShift: ContextShiftOptions?)throws  {
     let handle =
         try rustCallWithError(FfiConverterTypeNobodyWhoError_lift) {
     uniffi_nobodywho_uniffi_fn_constructor_rustchat_new(
@@ -772,7 +780,8 @@ public convenience init(model: RustModel, systemPrompt: String?, contextSize: UI
         FfiConverterOptionSequenceTypeRustTool.lower(tools),
         FfiConverterOptionTypeSamplerConfig.lower(sampler),
         FfiConverterOptionTypeMtpConfig.lower(mtp),
-        FfiConverterOptionUInt32.lower(threadCount),$0
+        FfiConverterOptionUInt32.lower(threadCount),
+        FfiConverterOptionTypeContextShiftOptions.lower(contextShift),$0
     )
 }
     self.init(unsafeFromHandle: handle)
@@ -831,11 +840,11 @@ open func askWithPrompt(parts: [ContentPart]) -> RustTokenStream  {
      * Answer a full list of messages and get a token stream, replacing the chat
      * history.
      *
-     * The list is the whole conversation, used as given: it must be non-empty, end
-     * in a user or tool message, and carry a system message only first. That system
-     * message sets the chat's system prompt; leave it out and the prompt already on
-     * the chat is kept. The response is appended, and the next `ask` continues from
-     * there.
+     * The list is the whole conversation, used as given: it must be non-empty and
+     * end in a user or tool message. A leading system message sets the chat's system
+     * prompt; leave it out and the prompt already on the chat is kept. A later one
+     * stays in the history, for the chat template to render in place. The response
+     * is appended, and the next `ask` continues from there.
      *
      * `options` follows the same rule for the chat's other settings.
      */
@@ -1021,6 +1030,26 @@ open func setChatHistory(messages: [Message])async throws   {
                 uniffi_nobodywho_uniffi_fn_method_rustchat_set_chat_history(
                     self.uniffiCloneHandle(),
                     FfiConverterSequenceTypeMessage.lower(messages)
+                )
+            },
+            pollFunc: ffi_nobodywho_uniffi_rust_future_poll_void,
+            completeFunc: ffi_nobodywho_uniffi_rust_future_complete_void,
+            freeFunc: ffi_nobodywho_uniffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeNobodyWhoError_lift
+        )
+}
+    
+    /**
+     * Set how old turns are forgotten when the context is full.
+     */
+open func setContextShift(options: ContextShiftOptions)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_nobodywho_uniffi_fn_method_rustchat_set_context_shift(
+                    self.uniffiCloneHandle(),
+                    FfiConverterTypeContextShiftOptions_lower(options)
                 )
             },
             pollFunc: ffi_nobodywho_uniffi_rust_future_poll_void,
@@ -1546,6 +1575,8 @@ public protocol RustModelProtocol: AnyObject, Sendable {
     
     func maxCtx()  -> UInt32
     
+    func source()  -> String
+    
 }
 open class RustModel: RustModelProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -1598,6 +1629,14 @@ open class RustModel: RustModelProtocol, @unchecked Sendable {
 open func maxCtx() -> UInt32  {
     return try!  FfiConverterUInt32.lift(try! rustCall() {
     uniffi_nobodywho_uniffi_fn_method_rustmodel_max_ctx(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+open func source() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_nobodywho_uniffi_fn_method_rustmodel_source(
             self.uniffiCloneHandle(),$0
     )
 })
@@ -2691,6 +2730,21 @@ public func FfiConverterTypeRustVoiceActivityDetection_lower(_ value: RustVoiceA
 public protocol SamplerBuilderProtocol: AnyObject, Sendable {
     
     /**
+     * Constrain output to a grammar, given as either Lark or GBNF.
+     */
+    func constrainWithGrammar(grammar: String)  -> SamplerBuilder
+    
+    /**
+     * Constrain output to a JSON schema, given as a JSON string.
+     */
+    func constrainWithJsonSchema(schema: String)  -> SamplerBuilder
+    
+    /**
+     * Constrain output to a regular expression.
+     */
+    func constrainWithRegex(pattern: String)  -> SamplerBuilder
+    
+    /**
      * Sample from the probability distribution (weighted random selection).
      */
     func dist()  -> SamplerConfig
@@ -2712,14 +2766,15 @@ public protocol SamplerBuilderProtocol: AnyObject, Sendable {
     func dynamicTemperature(temperature: Float, delta: Float, exponent: Float)  -> SamplerBuilder
     
     /**
-     * Deprecated: Use `sampler_preset_constrain_with_grammar()` instead. It accepts both Lark and GBNF strings.
-     */
-    func grammar(grammar: String, triggerOn: String?, root: String)  -> SamplerBuilder
-    
-    /**
      * Always select the most probable token (deterministic).
      */
     func greedy()  -> SamplerConfig
+    
+    /**
+     * Constrain output to a JSON object of any shape. Use
+     * `constrain_with_json_schema()` to pin down the structure too.
+     */
+    func json()  -> SamplerBuilder
     
     /**
      * Modify the likelihood of specific tokens.
@@ -2852,6 +2907,42 @@ public convenience init() {
 
     
     /**
+     * Constrain output to a grammar, given as either Lark or GBNF.
+     */
+open func constrainWithGrammar(grammar: String) -> SamplerBuilder  {
+    return try!  FfiConverterTypeSamplerBuilder_lift(try! rustCall() {
+    uniffi_nobodywho_uniffi_fn_method_samplerbuilder_constrain_with_grammar(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(grammar),$0
+    )
+})
+}
+    
+    /**
+     * Constrain output to a JSON schema, given as a JSON string.
+     */
+open func constrainWithJsonSchema(schema: String) -> SamplerBuilder  {
+    return try!  FfiConverterTypeSamplerBuilder_lift(try! rustCall() {
+    uniffi_nobodywho_uniffi_fn_method_samplerbuilder_constrain_with_json_schema(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(schema),$0
+    )
+})
+}
+    
+    /**
+     * Constrain output to a regular expression.
+     */
+open func constrainWithRegex(pattern: String) -> SamplerBuilder  {
+    return try!  FfiConverterTypeSamplerBuilder_lift(try! rustCall() {
+    uniffi_nobodywho_uniffi_fn_method_samplerbuilder_constrain_with_regex(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(pattern),$0
+    )
+})
+}
+    
+    /**
      * Sample from the probability distribution (weighted random selection).
      */
 open func dist() -> SamplerConfig  {
@@ -2899,25 +2990,23 @@ open func dynamicTemperature(temperature: Float, delta: Float, exponent: Float) 
 }
     
     /**
-     * Deprecated: Use `sampler_preset_constrain_with_grammar()` instead. It accepts both Lark and GBNF strings.
-     */
-open func grammar(grammar: String, triggerOn: String?, root: String) -> SamplerBuilder  {
-    return try!  FfiConverterTypeSamplerBuilder_lift(try! rustCall() {
-    uniffi_nobodywho_uniffi_fn_method_samplerbuilder_grammar(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(grammar),
-        FfiConverterOptionString.lower(triggerOn),
-        FfiConverterString.lower(root),$0
-    )
-})
-}
-    
-    /**
      * Always select the most probable token (deterministic).
      */
 open func greedy() -> SamplerConfig  {
     return try!  FfiConverterTypeSamplerConfig_lift(try! rustCall() {
     uniffi_nobodywho_uniffi_fn_method_samplerbuilder_greedy(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Constrain output to a JSON object of any shape. Use
+     * `constrain_with_json_schema()` to pin down the structure too.
+     */
+open func json() -> SamplerBuilder  {
+    return try!  FfiConverterTypeSamplerBuilder_lift(try! rustCall() {
+    uniffi_nobodywho_uniffi_fn_method_samplerbuilder_json(
             self.uniffiCloneHandle(),$0
     )
 })
@@ -3369,6 +3458,94 @@ public func FfiConverterTypeChatStats_lift(_ buf: RustBuffer) throws -> ChatStat
 #endif
 public func FfiConverterTypeChatStats_lower(_ value: ChatStats) -> RustBuffer {
     return FfiConverterTypeChatStats.lower(value)
+}
+
+
+/**
+ * How a chat forgets old turns when its context is full. A turn is a user
+ * message and everything up to the next one; system messages are always kept.
+ */
+public struct ContextShiftOptions: Equatable, Hashable {
+    /**
+     * `false` disables shifting, so a full context is an error instead.
+     */
+    public var enabled: Bool
+    /**
+     * Turns always kept at the start of the history.
+     */
+    public var keepFirstTurns: UInt32
+    /**
+     * Turns always kept at the end of the history; at least 1.
+     */
+    public var keepLastTurns: UInt32
+    /**
+     * Size the history is shrunk to. `null` means half the context size.
+     */
+    public var target: ShiftTarget?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `false` disables shifting, so a full context is an error instead.
+         */enabled: Bool = true, 
+        /**
+         * Turns always kept at the start of the history.
+         */keepFirstTurns: UInt32 = UInt32(1), 
+        /**
+         * Turns always kept at the end of the history; at least 1.
+         */keepLastTurns: UInt32 = UInt32(2), 
+        /**
+         * Size the history is shrunk to. `null` means half the context size.
+         */target: ShiftTarget? = nil) {
+        self.enabled = enabled
+        self.keepFirstTurns = keepFirstTurns
+        self.keepLastTurns = keepLastTurns
+        self.target = target
+    }
+
+    
+}
+
+#if compiler(>=6)
+extension ContextShiftOptions: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeContextShiftOptions: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ContextShiftOptions {
+        return
+            try ContextShiftOptions(
+                enabled: FfiConverterBool.read(from: &buf), 
+                keepFirstTurns: FfiConverterUInt32.read(from: &buf), 
+                keepLastTurns: FfiConverterUInt32.read(from: &buf), 
+                target: FfiConverterOptionTypeShiftTarget.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ContextShiftOptions, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.enabled, into: &buf)
+        FfiConverterUInt32.write(value.keepFirstTurns, into: &buf)
+        FfiConverterUInt32.write(value.keepLastTurns, into: &buf)
+        FfiConverterOptionTypeShiftTarget.write(value.target, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeContextShiftOptions_lift(_ buf: RustBuffer) throws -> ContextShiftOptions {
+    return try FfiConverterTypeContextShiftOptions.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeContextShiftOptions_lower(_ value: ContextShiftOptions) -> RustBuffer {
+    return FfiConverterTypeContextShiftOptions.lower(value)
 }
 
 
@@ -4024,6 +4201,86 @@ public func FfiConverterTypeNobodyWhoError_lower(_ value: NobodyWhoError) -> Rus
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * Size a context shift shrinks the chat history to.
+ */
+
+public enum ShiftTarget: Equatable, Hashable {
+    
+    /**
+     * A fraction of the context size, in `(0, 1)`.
+     */
+    case fraction(fraction: Float
+    )
+    /**
+     * A number of tokens, below the context size.
+     */
+    case tokens(tokens: UInt32
+    )
+
+
+
+}
+
+#if compiler(>=6)
+extension ShiftTarget: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeShiftTarget: FfiConverterRustBuffer {
+    typealias SwiftType = ShiftTarget
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ShiftTarget {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .fraction(fraction: try FfiConverterFloat.read(from: &buf)
+        )
+        
+        case 2: return .tokens(tokens: try FfiConverterUInt32.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ShiftTarget, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .fraction(fraction):
+            writeInt(&buf, Int32(1))
+            FfiConverterFloat.write(fraction, into: &buf)
+            
+        
+        case let .tokens(tokens):
+            writeInt(&buf, Int32(2))
+            FfiConverterUInt32.write(tokens, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeShiftTarget_lift(_ buf: RustBuffer) throws -> ShiftTarget {
+    return try FfiConverterTypeShiftTarget.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeShiftTarget_lower(_ value: ShiftTarget) -> RustBuffer {
+    return FfiConverterTypeShiftTarget.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * `push` always returns one of these: `Speech`/`Silence` for the confirmed
  * state when unchanged since the last call, or `SpeechStarted`/`SpeechEnded`
  * on the call that confirmed the transition.
@@ -4490,6 +4747,30 @@ fileprivate struct FfiConverterOptionTypeSamplerConfig: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeContextShiftOptions: FfiConverterRustBuffer {
+    typealias SwiftType = ContextShiftOptions?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeContextShiftOptions.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeContextShiftOptions.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeMtpConfig: FfiConverterRustBuffer {
     typealias SwiftType = MtpConfig?
 
@@ -4530,6 +4811,30 @@ fileprivate struct FfiConverterOptionTypePendingToolCall: FfiConverterRustBuffer
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypePendingToolCall.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeShiftTarget: FfiConverterRustBuffer {
+    typealias SwiftType = ShiftTarget?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeShiftTarget.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeShiftTarget.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -5264,16 +5569,6 @@ public func samplerPresetDry() -> SamplerConfig  {
 })
 }
 /**
- * Create a sampler with a custom grammar constraint.
- */
-public func samplerPresetGrammar(grammar: String) -> SamplerConfig  {
-    return try!  FfiConverterTypeSamplerConfig_lift(try! rustCall() {
-    uniffi_nobodywho_uniffi_fn_func_sampler_preset_grammar(
-        FfiConverterString.lower(grammar),$0
-    )
-})
-}
-/**
  * Create a greedy sampler (always picks most probable token).
  */
 public func samplerPresetGreedy() -> SamplerConfig  {
@@ -5282,6 +5577,9 @@ public func samplerPresetGreedy() -> SamplerConfig  {
     )
 })
 }
+/**
+ * Constrain output to a JSON object of any shape.
+ */
 public func samplerPresetJson() -> SamplerConfig  {
     return try!  FfiConverterTypeSamplerConfig_lift(try! rustCall() {
     uniffi_nobodywho_uniffi_fn_func_sampler_preset_json($0
@@ -5299,7 +5597,7 @@ public func samplerPresetTemperature(temperature: Float) -> SamplerConfig  {
 })
 }
 /**
- * Create a sampler with top-k filtering only.
+ * Create a sampler with the default steps, but top-k overridden.
  */
 public func samplerPresetTopK(topK: Int32) -> SamplerConfig  {
     return try!  FfiConverterTypeSamplerConfig_lift(try! rustCall() {
@@ -5309,7 +5607,7 @@ public func samplerPresetTopK(topK: Int32) -> SamplerConfig  {
 })
 }
 /**
- * Create a sampler with nucleus (top-p) sampling.
+ * Create a sampler with the default steps, but nucleus (top-p) overridden.
  */
 public func samplerPresetTopP(topP: Float) -> SamplerConfig  {
     return try!  FfiConverterTypeSamplerConfig_lift(try! rustCall() {
@@ -5370,22 +5668,19 @@ private let initializationResult: InitializationResult = {
     if (uniffi_nobodywho_uniffi_checksum_func_sampler_preset_dry() != 55378) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_nobodywho_uniffi_checksum_func_sampler_preset_grammar() != 29288) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_nobodywho_uniffi_checksum_func_sampler_preset_greedy() != 13219) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_nobodywho_uniffi_checksum_func_sampler_preset_json() != 8103) {
+    if (uniffi_nobodywho_uniffi_checksum_func_sampler_preset_json() != 42303) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_func_sampler_preset_temperature() != 64803) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_nobodywho_uniffi_checksum_func_sampler_preset_top_k() != 44137) {
+    if (uniffi_nobodywho_uniffi_checksum_func_sampler_preset_top_k() != 56996) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_nobodywho_uniffi_checksum_func_sampler_preset_top_p() != 54893) {
+    if (uniffi_nobodywho_uniffi_checksum_func_sampler_preset_top_p() != 22588) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_method_rustchat_ask() != 53575) {
@@ -5397,7 +5692,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_nobodywho_uniffi_checksum_method_rustchat_ask_with_prompt() != 46807) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_nobodywho_uniffi_checksum_method_rustchat_complete() != 37833) {
+    if (uniffi_nobodywho_uniffi_checksum_method_rustchat_complete() != 24327) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_method_rustchat_get_chat_history() != 12722) {
@@ -5425,6 +5720,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_method_rustchat_set_chat_history() != 6058) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_nobodywho_uniffi_checksum_method_rustchat_set_context_shift() != 58540) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_method_rustchat_set_sampler_config() != 28012) {
@@ -5461,6 +5759,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_method_rustmodel_max_ctx() != 52004) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_nobodywho_uniffi_checksum_method_rustmodel_source() != 39358) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_method_rustspeechtotext_transcribe_file() != 59975) {
@@ -5505,6 +5806,15 @@ private let initializationResult: InitializationResult = {
     if (uniffi_nobodywho_uniffi_checksum_method_rustvoiceactivitydetection_segment() != 39967) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_constrain_with_grammar() != 36786) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_constrain_with_json_schema() != 45268) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_constrain_with_regex() != 1166) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_dist() != 23376) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5514,10 +5824,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_dynamic_temperature() != 5004) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_grammar() != 3547) {
+    if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_greedy() != 32898) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_greedy() != 32898) {
+    if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_json() != 18949) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_method_samplerbuilder_logit_bias() != 61844) {
@@ -5559,7 +5869,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_nobodywho_uniffi_checksum_method_samplerconfig_to_json() != 51798) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_nobodywho_uniffi_checksum_constructor_rustchat_new() != 2313) {
+    if (uniffi_nobodywho_uniffi_checksum_constructor_rustchat_new() != 4810) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nobodywho_uniffi_checksum_constructor_rustcrossencoder_new() != 9022) {
